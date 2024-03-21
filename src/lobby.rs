@@ -1,9 +1,15 @@
-use crate::messages::{ClientActorMessage, Connect, Disconnect, WsMessage};
-use actix::prelude::{Actor, Context, Handler, Recipient};
 use std::collections::{HashMap, HashSet};
+
+use actix::prelude::{Actor, Context, Handler, Recipient};
 use uuid::Uuid;
 
+use crate::messages::{
+    ClientActorMessage, Connect, Content, Disconnect, SyncMsg, SyncType, WsMessage,
+};
+
 type Socket = Recipient<WsMessage>;
+
+const MOST_PAITIES: usize = 2;
 
 #[derive(Default)]
 pub struct Lobby {
@@ -12,9 +18,9 @@ pub struct Lobby {
 }
 
 impl Lobby {
-    fn send_message(&self, message: &str, id_to: &Uuid) {
+    fn send_message(&self, message: Content, id_to: &Uuid) {
         if let Some(socket_recipient) = self.sessions.get(id_to) {
-            socket_recipient.do_send(WsMessage(message.to_owned()));
+            socket_recipient.do_send(WsMessage(message));
         } else {
             println!("attempting to send message but couldn't find user id.");
         }
@@ -36,7 +42,12 @@ impl Handler<Disconnect> for Lobby {
                 .iter()
                 .filter(|conn_id| *conn_id.to_owned() != msg.id)
                 .for_each(|user_id| {
-                    self.send_message(&format!("{} disconnected.", &msg.id), user_id)
+                    let msg = serde_json::to_string(&SyncMsg {
+                        type_:  SyncType::Leave,
+                        device: msg.id.to_string(),
+                    })
+                    .unwrap();
+                    self.send_message(Content::Text(msg), user_id)
                 });
 
             if let Some(lobby) = self.rooms.get_mut(&msg.room_id) {
@@ -55,28 +66,44 @@ impl Handler<Connect> for Lobby {
     type Result = ();
 
     fn handle(&mut self, msg: Connect, _: &mut Context<Self>) -> Self::Result {
+        self.sessions.insert(msg.self_id, msg.addr.clone());
+
         self.rooms
             .entry(msg.lobby_id)
             .or_default()
             .insert(msg.self_id);
 
-        self.rooms
-            .get(&msg.lobby_id)
-            .unwrap()
+        let room = self.rooms.get(&msg.lobby_id).unwrap();
+
+        room
             .iter()
             .filter(|conn_id| *conn_id.to_owned() != msg.self_id)
             .for_each(|conn_id| {
-                self.send_message(&format!("{} just joined!", msg.self_id), conn_id)
+                let msg = serde_json::to_string(&SyncMsg {
+                    type_: SyncType::Join,
+                    device: msg.self_id.to_string(),
+                }).unwrap();
+                self.send_message(Content::Text(msg), conn_id)
             });
 
-        self.sessions.insert(msg.self_id, msg.addr);
+        let uuid = serde_json::to_string(&SyncMsg {
+            type_:  SyncType::GenUuid,
+            device: msg.self_id.to_string(),
+        })
+        .unwrap();
+        self.send_message(Content::Text(uuid), &msg.self_id);
 
-        // self.send_message(&format!("your id is {}, index is {}", msg.self_id,
-        // self.rooms.), &msg.self_id);
-        self.send_message(
-            &format!("{}", self.rooms.get(&msg.lobby_id).unwrap().len() - 1),
-            &msg.self_id,
-        );
+        if room.len() == MOST_PAITIES {
+            room
+            .iter()
+            .for_each(|conn_id| {
+                let msg = serde_json::to_string(&SyncMsg {
+                    type_: SyncType::Start,
+                    ..Default::default()
+                }).unwrap();
+                self.send_message(Content::Text(msg), conn_id);
+            });
+        }
     }
 }
 
@@ -84,16 +111,13 @@ impl Handler<ClientActorMessage> for Lobby {
     type Result = ();
 
     fn handle(&mut self, msg: ClientActorMessage, _ctx: &mut Context<Self>) -> Self::Result {
-        if msg.msg.starts_with("\\w") {
-            if let Some(id_to) = msg.msg.split(' ').collect::<Vec<&str>>().get(1) {
-                self.send_message(&msg.msg, &Uuid::parse_str(id_to).unwrap());
-            }
-        } else {
-            self.rooms
-                .get(&msg.room_id)
-                .unwrap()
-                .iter()
-                .for_each(|client| self.send_message(&msg.msg, client));
-        }
+        let room_id = msg.room_id;
+        let msg = Content::Binary(msg.msg);
+
+        self.rooms
+            .get(&room_id)
+            .unwrap()
+            .iter()
+            .for_each(|client| self.send_message(msg.clone(), client));
     }
 }

@@ -1,13 +1,15 @@
 mod lobby;
-mod ws;
-use lobby::Lobby;
 mod messages;
 mod start_connection;
-use actix::Actor;
-use start_connection::start_connection as start_connection_route;
-mod protos;
+mod ws;
+mod protos {
+    include!(concat!(env!("OUT_DIR"), "/protos.rs"));
+}
 
+use actix::Actor;
 use actix_web::{web, App, HttpServer};
+use lobby::Lobby;
+use start_connection::start_connection as start_connection_route;
 
 const PORT: u16 = 8080;
 

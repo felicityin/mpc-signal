@@ -88,7 +88,13 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsConn {
             Ok(ws::Message::Pong(_)) => {
                 self.heartbeat = Instant::now();
             }
-            Ok(ws::Message::Binary(bin)) => ctx.binary(bin),
+            Ok(ws::Message::Binary(bin)) => {
+                self.lobby_addr.do_send(ClientActorMessage {
+                    id:      self.socket_id,
+                    msg:     bin.to_vec(),
+                    room_id: self.room,
+                });
+            }
             Ok(ws::Message::Close(reason)) => {
                 ctx.close(reason);
                 ctx.stop();
@@ -97,11 +103,7 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsConn {
                 ctx.stop();
             }
             Ok(ws::Message::Nop) => (),
-            Ok(Text(s)) => self.lobby_addr.do_send(ClientActorMessage {
-                id:      self.socket_id,
-                msg:     s.to_string(),
-                room_id: self.room,
-            }),
+            Ok(Text(s)) => ctx.text(s),
             Err(e) => std::panic::panic_any(e),
         }
     }
@@ -111,6 +113,9 @@ impl Handler<WsMessage> for WsConn {
     type Result = ();
 
     fn handle(&mut self, msg: WsMessage, ctx: &mut Self::Context) {
-        ctx.text(msg.0);
+        match msg.0 {
+            crate::messages::Content::Text(str) => ctx.text(str),
+            crate::messages::Content::Binary(bin) => ctx.binary(bin),
+        }
     }
 }
